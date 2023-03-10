@@ -1,0 +1,597 @@
+#include <time.h> 
+#include <cstdlib> 
+#include <iostream> 
+#include <fstream> 
+#include <string> 
+#include <ilcplex/ilocplex.h> 
+#include <stdio.h>
+#include <ilconcert/iloexpression.h>
+using namespace std;
+
+ILOSTLBEGIN
+typedef IloArray<IloIntVarArray> IntVarMatrix; //定义二维变量 
+typedef IloArray<IntVarMatrix> IntVar3Matrix;
+
+typedef IloArray<IloNumVarArray> NumVarMatrix; //定义二维变量 
+typedef IloArray<NumVarMatrix> NumVar3Matrix;
+typedef IloArray<NumVar3Matrix> NumVar4Matrix;
+typedef IloArray<NumVar4Matrix> NumVar5Matrix;
+
+typedef IloArray<IloBoolVarArray>BoolVarMatrix;
+typedef IloArray<BoolVarMatrix> BoolVar3Matrix;
+typedef IloArray<BoolVar3Matrix> BoolVar4Matrix;
+typedef IloArray<BoolVar4Matrix> BoolVar5Matrix;
+
+const IloInt H = 21600;//定义车辆每天的最大工作时间6小时,单位秒
+const IloNum Sup = 0;//定义车辆装载1单位物资包所用时间，秒
+const IloNum Sunload = 0;//定义车辆卸载1单位物资包所用时间
+const IloInt capacity = 615;//定义车辆承载量
+constexpr IloInt N=9, K = 10, R = 2, T = 8;//RT表示每天的路线数量，暂时设为定值2
+
+
+void OR1(IloInt demand[10], IloNum u[10], IloNum time[10][10], IloInt Q[8])
+{
+	IloEnv env;//定义环境
+	
+	IloModel model(env);//创建模型对象
+	IloCplex cplex(model);
+
+	/*******************定义变量********************/
+	//定义配送量q[i][k][r][t]，在第t天，车辆k通过路线r交付给需求点i的物资量
+	NumVar4Matrix q(env, N+1);
+	for (IloInt i = 1; i < N + 1; i++)
+	{
+		q[i] = NumVar3Matrix(env, K);
+		for (IloInt k = 0; k < K; k++)
+		{
+			q[i][k] = NumVarMatrix(env, R);
+			for (IloInt r = 0; r < R; r++)
+			{
+				q[i][k][r] = IloNumVarArray(env, T);
+				for (IloInt t = 0; t < T; t++)
+				{
+					q[i][k][r][t] = IloNumVar(env, 0, 615, ILOINT);
+				}
+			}
+		}
+	}
+	//定义配送量w[i][k][r][t]，在第t天，车辆k通过路线r交付给需求点i的物资量
+	NumVar4Matrix w(env, N+1);
+	for (IloInt i = 1; i < N + 1; i++)
+	{
+		w[i] = NumVar3Matrix(env, K);
+		for (IloInt k = 0; k < K; k++)
+		{
+			w[i][k] = NumVarMatrix(env, R);
+			for (IloInt r = 0; r < R; r++)
+			{
+				w[i][k][r] = IloNumVarArray(env, T);
+				for (IloInt t = 0; t < T; t++)
+				{
+					w[i][k][r][t] = IloNumVar(env, 0, 615, ILOINT);
+				}
+			}
+		}
+	}
+	//定义配送量q[i][k][r][t]和w[i][k][r][t]，
+    //在第t天，车辆k通过路线r交付给需求点i的物资量
+    //由于q和w都有相同的范围和类型，
+    //可以将它们合并为一个五维数组q[i][k][r][t][p]
+    //其中p=0表示q,p=1表示w将q和w合并为一个五维数组x，其中第五维p表示是q还是w。这样做有两个优点：一是节省了内存空间，因为只需要分配NKRT2个元素。二是简化了代码的逻辑，因为每次使用x只需要指定五个下标。
+	/*NumVar5Matrix q(env, N+1);
+	for (IloInt i = 1; i <= N+1; i++) { 
+		q[i] = NumVar4Matrix(env, K);
+		for (IloInt k = 0; k < K; k++) { 
+			q[i][k] = NumVar3Matrix(env, R);
+			for (IloInt r = 0; r < R; r++) { 
+				q[i][k][r] = NumVarMatrix(env, T); 
+				for (IloInt t = 0; t < T; t++) { 
+					q[i][k][r][t] = IloNumVarArray(env, 2); 
+					for (IloInt p = 0; p < 2; p++) { 
+						q[i][k][r][t][p] = IloNumVar(env, 0, capacity, ILOINT); 
+					} 
+				} 
+			} 
+		} 
+	}*/
+
+	//定义布尔型变量x[i][j][k][r][t]，当且仅当在第t天，车辆k在同一线路r经过弧（i, j）时取1，否则取0
+	BoolVar5Matrix x(env, N + 1);
+	for (IloInt i = 0; i < N + 1; i++) {
+		x[i] = BoolVar4Matrix(env, N + 1);
+		for (IloInt j = 0; j < N + 1; j++) {
+			x[i][j] = BoolVar3Matrix(env, K);
+			for (IloInt k = 0; k < K; k++) {
+				x[i][j][k] = BoolVarMatrix(env, R);
+				for (IloInt r = 0; r < R; r++) {
+					x[i][j][k][r] = IloBoolVarArray(env, T);
+					for (IloInt t = 0; t < T; t++) {
+						x[i][j][k][r].add(IloBoolVar(env)); // 使用add方法来添加一个布尔型变量到数组中
+					}
+				}
+			}
+		}
+	}
+	/*BoolVar5Matrix x(env, N + 1);
+	for (IloInt i = 0; i < N + 1; i++)
+	{
+		x[i] = BoolVar4Matrix(env, N + 1);
+		for (IloInt j = 0; j < N + 1; j++)
+		{
+			x[i][j] = BoolVar3Matrix(env, K);
+			for (IloInt k = 0; k < K; k++)
+			{
+				x[i][j][k] = BoolVarMatrix(env, R);
+				for (IloInt r = 0; r < R; r++)
+				{
+					x[i][j][k][r] = IloBoolVarArray(env, T);
+					for (IloInt t = 0; t < T; t++)
+					{
+						x[i][j][k][r][t] = IloBoolVar(env);
+					}
+				}
+			}
+		}
+	}*/
+	
+
+	//定义布尔型变量y[i][t]，当且仅当在第t天对需求点i进行配送时取1，否则取0
+	BoolVarMatrix y(env, N);
+	for (IloInt i = 1; i < N + 1; i++)
+	{
+		y[i] = IloBoolVarArray(env, T);
+		for (IloInt t = 0; t < T; t++)
+		{
+			y[i].add(IloBoolVar(env));
+		}
+	}
+	
+
+	//定义z[i, t, v]布尔型变量，当且仅当第t天对需求点i进行配送且下一配送周期为t’取1，否则取0
+	BoolVar3Matrix z(env, N);
+	for (IloInt i = 1; i < N + 1; i++)
+	{
+		z[i] = BoolVarMatrix(env, T);
+		for (IloInt t = 0; t < T; t++)
+		{
+			z[i][t] = IloBoolVarArray(env, T);
+			for (IloInt v = 0; v < T; v++) {
+				z[i][t].add(IloBoolVar(env));//z[i][t][v] = IloNumVar(env, 0, 1, ILOBOOL);
+			}
+		}
+	}
+
+	//约束 对角元素为0
+	for (int k = 0; k < K; k++) {
+		for (int r = 0; r < R; r++) {
+			for (int t = 0; t < T; t++) {
+				for (int i = 0; i < N + 1; i++) {
+					model.add(x[i][i][k][r][t] == 0);
+				}
+			}
+
+		}
+	}
+	/**************（2）保持流量守恒**************/
+	IloExpr sumofX1(env);
+	IloExpr sumofX2(env);
+	for (int i = 1; i < N + 1; i++) {
+		for (int k = 0; k < K; k++) {
+			for (int r = 0; r < R; r++) {
+				for (int t = 0; t < T; t++) {
+					sumofX1.clear(); sumofX2.clear();
+					for (int j = 0; j < N + 1; j++) {
+						sumofX1 += x[i][j][k][r][t];
+						sumofX2 += x[j][i][k][r][t];
+					}
+					model.add(sumofX1 <= 1);
+					model.add(sumofX1 == sumofX2);
+				}
+			}
+		}
+	}
+	//约束（3）车辆不离开配送中心不会经过节点。
+	IloExpr sumofX0(env);
+	for (int k = 0; k < K; k++) {
+		for (int r = 0; r < R; r++) {
+			for (int t = 0; t < T; t++) {
+				sumofX0.clear();
+				for (int b = 1; b < N + 1; b++) {
+					sumofX0 += x[0][b][k][r][t];
+				}
+				for (int i = 0; i < N + 1; i++) {
+					for (int j = 0; j < N + 1; j++) {						
+						model.add(sumofX0 >= x[i][j][k][r][t]);
+					}
+				}
+			}
+		}
+	}
+
+	/**************（3）表示每条路线在配送中心开始和终止***********/
+	/*IloExpr sumofX3(env);
+	IloExpr sumofX4(env);
+	for (int k = 0; k < K; k++) {
+		for (int t = 0; t < T; t++) {
+			for (int r = 0; r < R; r++) {
+				sumofX3.clear(); sumofX4.clear();
+				for (int j = 1; j < N + 1; j++) {
+					sumofX3 += x[0][j][k][r][t];
+					sumofX4 += x[j][0][k][r][t];
+				}
+				model.add(sumofX3 <= 1);
+				model.add(sumofX4 <= 1 );
+			}
+		}
+	}*/
+
+	/********（4）子回路消除约束***********/
+	for (int i = 1; i < N + 1; i++) {
+		for (int j = 1; j < N + 1; j++) {
+			for (int k = 0; k < K; k++) {
+				for (int r = 0; r < R; r++) {
+					for (int t = 0; t < T; t++) {
+						model.add(w[j][k][r][t] - w[i][k][r][t] >= x[i][j][k][r][t] * q[j][k][r][t] - capacity * (1 - x[i][j][k][r][t]));
+					}
+				}
+			}
+		}
+	}
+
+    /******（5）（6）表示，只有车辆路线经过需求点才能进行配送***********/
+	for (int i = 1; i < N + 1; i++) {
+		for (int j = 0; j < N + 1; j++) {
+				for (int k = 0; k < K; k++) {
+					for (int r = 0; r < R; r++) {
+						for (int t = 0; t < T; t++) {
+							model.add(y[i][t] <= x[i][j][k][r][t]);
+						}
+					}
+				}
+			
+		}
+	}
+	IloExpr sumofX6(env);
+	for (int i = 1; i < N + 1; i++) {
+		for (int k = 0; k < K; k++) {
+			for (int r = 0; r < R; r++) {
+				for (int t = 0; t < T; t++) {
+					for (int j = 0; j < N + 1; j++) {
+						sumofX6 += x[i][j][k][r][t];
+					}
+					model.add(q[i][k][r][t] <= capacity * sumofX6);
+					sumofX6.clear();
+				}
+			}
+		}
+	}
+
+	/***********（7）表示在每天任意车辆的所有路线的总运输时间不能超过这天的可用工作时间***************/
+	IloExpr sumofX5(env);
+	IloExpr sumofQ1(env);
+	for (int k = 0; k < K; k++) {
+		for (int t = 0; t < T; t++) {
+			sumofX5.clear(); sumofQ1.clear();
+			for (int i = 0; i < N + 1; i++) {
+				for (int j = 0; j < N + 1; j++) {
+					for (int r = 0; r < R; r++) {
+						sumofX5 += (x[i][j][k][r][t] * time[i][j]);
+					}
+				}
+			}
+			for (int i = 1; i < N + 1; i++) {
+				for (int r = 0; r < R; r++) {
+					sumofQ1 += q[i][k][r][t];
+				}
+			}
+			model.add(sumofX5 + (Sunload + Sup) * sumofQ1 <= H);
+		}
+	}
+	
+	/******（8）表示任意周期车辆配送出的物资不能超过当期配送中心物资持有量*********/
+	IloExpr sumofQ2(env);
+	IloExpr sumofQ3(env);
+	for (int v = 0; v < T; v++) {
+		sumofQ2.clear(); sumofQ3.clear();
+		for (int t = 0; t <= v; t++) {
+			sumofQ2 += Q[t];
+			for (int i = 1; i < N + 1; i++) {
+				for (int k = 0; k < K; k++) {
+					for (int r = 0; r < R; r++) {
+						sumofQ3 += q[i][k][r][t];
+					}
+				}
+			}
+		}		
+		model.add(sumofQ2 >= sumofQ3);
+	}
+
+	/**（9）表示任意路线上客户的总需求不应超过车辆最大承载量Q***/
+	IloExpr sumofQ4(env);
+	for (int k = 0; k < K; k++) {
+		for (int r = 0; r < R; r++) {
+			for (int t = 0; t < T; t++) {
+				sumofQ4.clear();
+				for (int i = 1; i < N + 1; i++) {
+					sumofQ4 += q[i][k][r][t];
+				}
+				model.add(sumofQ4 <= capacity);
+			}
+		}
+	}
+	/**约束（10）避免出现空路径在前而造成多个最优解的情况***/
+	IloExpr sumofX7(env);
+	IloExpr sumofX8(env);
+	for (int k = 0; k < K; k++) {
+		for (int r = 0; r < R - 1; r++) {
+			for (int b = r + 1; r < R; r++) {
+				for (int t = 0; t < T; t++) {
+					for (int i = 1; i < N + 1; i++) {
+						sumofX7 += x[0][i][k][r][t];
+						sumofX8 += x[0][i][k][b][t];
+					}
+					model.add(sumofX7 >= sumofX8);
+				}
+			}
+		}
+	}
+
+	/**（11）任意天，若为某需求点进行配送，则必须满足其所有居民需求***/
+	IloExpr sumofQ5(env);
+	for (int i = 1; i < N + 1; i++) {
+		for (int t = 0; t < T; t++) {
+			for (int k = 0; k < K; k++) {
+				for (int r = 0; r < R; r++) {
+					sumofQ5 += q[i][k][r][t];
+				}
+			}
+			model.add(sumofQ5 == demand[i] * y[i][t]);
+			sumofQ5.clear();
+		}
+	}
+
+	/**（12）（13）可知，在物资消耗完之前不须再为该需求点进行配送***/
+	IloExpr sumofY(env);
+	for (int i = 1; i < N + 1; i++) {
+		for (int t = 0; t < T; t++) {
+			if (t + 3 <= T) {
+				for (int v = t; v < t + 3; v++) {
+					sumofY += y[i][v];
+				}
+			}			
+			model.add(sumofY <= 1);
+			sumofY.clear();
+		}
+	}
+	//这个约束对目标函数重要
+	for (int i = 1; i < N + 1; i++) {
+		for (int t = 0; t < T; t++) {
+			for (int v = 0; v < T; v++) {
+				if (v <= t + 2 ) model.add(z[i][t][v] == 0);
+			}			
+		}
+	}
+
+	/**（12）（13）表示在物资消耗完时需要在三天之内为该需求点进行配送***/
+	/*IloExpr sumofY1(env);
+	for (int i = 1; i < N + 1; i++) {
+		for (int t = 0; t < T; t++) {
+			if (t + 6 <= T) {
+				for (int v = t + 3; v < t + 6; v++) {
+					sumofY1 += y[i][v];
+				}
+				model.add(sumofY1 >= y[i][t]);
+				sumofY1.clear();
+			}			
+		}
+	}
+
+	IloExpr sumofZ1(env);
+	for (int i = 1; i < N + 1; i++) {
+		for (int t = 0; t < T; t++) {
+			if (t + 6 <= T+2) {
+				for (int v = t + 3; v < t + 6; v++) {
+					sumofZ1 += z[i][t][v];
+				}
+				model.add(sumofZ1 == y[i][t]);
+				sumofZ1.clear();
+			}
+		}
+	}*/
+
+	/***（14）将z与y变量联系起来。*****/
+	/*for (int i = 1; i < N + 1; i++) {
+		for (int t = 0; t < T; t++) {
+			for (int v = 0; v < T; t++) {
+				model.add(2*z[i][t][v] <= y[i][t]+ y[i][v]);
+			}
+		}
+		
+	}*/
+	for (IloInt i = 1; i <= N; i++)
+	{
+		for (IloInt t = 0; t < T; t++)
+		{
+			for (IloInt v = 0; v < T; v++)
+			{
+				if (t != v) //判断是否相等
+				{
+					model.add(2 * z[i][t][v] <= y[i][t] + y[i][v]); //添加约束
+				}
+
+			}
+
+		}
+
+	}
+		
+	/**************确定 目标函数**********************/
+	IloExpr Cmin(env);
+	
+	for (int i = 1; i < N + 1; i++) {
+		//for (int t = 0; t < T; t++) {
+		//	Cmin += y[i][t] * u[i] * demand[i] * t;
+		//	IloInt a = cplex.getValue(y[i][t]);
+		//	if (a ==1) { // y[i][t]或者 if (static_cast<bool>(y[i][t]))
+		//		break;
+
+		//	}
+		//}
+
+		for (int t = 0; t < T; t++) {
+			for (int v = t + 3; v < T; v++) {
+					Cmin += z[i][t][v] * u[i] * demand[i] * (v - t - 3);
+			}			
+			
+		}
+
+		//for (int t = T-1; t >= 0; t--) {
+		//	Cmin += y[i][t] * (1- z[i][t][T])*u[i] * demand[i] * (T-t-3);
+		//	IloInt b = cplex.getValue(y[i][t]);
+		//	if (b == 1) { // y[i][t]或者 if (static_cast<bool>(y[i][t]))
+		//		break;
+
+		//	}
+		//}
+
+	}
+	model.add(IloMinimize(env, Cmin));
+
+	//创建求解对象
+	
+	/*IloCplex cplex(env);*/
+	cplex.extract(model);
+	cplex.setParam(IloCplex::Param::Preprocessing::Presolve, 0);
+	cplex.setParam(IloCplex::Param::MIP::Limits::AuxRootThreads, -1);
+	cplex.solve();
+	cplex.exportModel("./cui.lp");
+
+	if (!cplex.solve())
+	{
+		std::cout << "infeasble!" << std::endl;
+		return;
+	}
+
+	cout << "Solutions: " << endl;
+	cout << "最小值=" << Cmin << endl;
+	for (int t = 0; t < T; t++)
+	{
+		cout << t + 1 << "周期/天 " << " :" << endl;
+		for (int k = 0; k < K; k++)
+		{
+			cout << "vehicle " << k + 1 << " :" << endl;
+			for (int r = 0; r < R; r++)
+			{
+			cout << "路线 " << r + 1 << " -";
+			
+				for (int i = 0; i < N + 1; i++)
+				{
+					for (int j = N; j >= 0; j--)
+					{						
+						IloInt c = cplex.getValue(x[i][j][k][r][t]);
+						if (c == 1) {
+							if (i == 0) cout << "vehicle " << k + 1 << " :" << i << " --> " << j << "(" << q[j][k][r][t] << ")";
+							else if (i != 0) cout << " --> " << j << "(" << q[j][k][r][t] << ")";
+							i = j;
+							break;
+						}
+						if (j == 0) { cout << endl; break; }
+					}
+				}
+			}
+		}
+	}
+
+	if (cplex.getStatus() == IloAlgorithm::Optimal)
+	{
+		env.out() << "The calculation time is : " << cplex.getCplexTime() << "s" << endl;
+		env.out() << "Solution status = " << cplex.getStatus() << endl;
+		env.out() << "The Optimal Objective = " << cplex.getObjValue() << endl;
+
+	}
+	else {
+		if (cplex.getStatus() == IloAlgorithm::Infeasible)
+			cerr << "The OptT_F1-model is in, please check it carefully!" << endl;
+		else {
+			if (cplex.getStatus() == IloAlgorithm::Unbounded)
+				cerr << "The model is Unbounded, please check it carefully!" << endl;
+			else
+			{
+				cerr << endl << "****cerr happend****" << endl;
+				throw(-1);
+			}
+		}
+	}
+
+	env.end();
+	//return 0;
+
+}
+
+int main(int argc, char** argv)
+{
+	try {
+		/*const IloInt  N = 9;*/
+		int jobId[10];
+		IloInt demand[10];
+		IloInt xcord[10], ycord[10];
+		IloNum u[10];//u为紧急度
+		IloInt Q[8] = { 7000,7000,7000,7000,7000,7000,7000,7000 };//定义配送中心接收量
+
+		//从txt文件中读取客户信息___x,ycord，demand，u
+		ifstream inn;
+		inn.open("MPSDVRP.txt");
+		if (inn)
+		{
+			for (int i = 0; i < N + 1; i++) {
+				inn >> jobId[i] >> xcord[i] >> ycord[i] >> demand[i] >> u[i];
+
+			}
+		}
+		inn.close();
+
+		IloNum distance[10][10], time[10][10];
+
+		//数据初始化，计算客户之间的距离以及访问时长
+		for (int i = 0; i < N + 1; i++) {
+			for (int j = 0; j < N + 1; j++) {
+				if (i == j) {
+					distance[i][j] = 0;
+					time[i][j] = 0;
+				}
+				else {
+					distance[i][j] = sqrt((xcord[i] - xcord[j]) * (xcord[i] - xcord[j]) + (ycord[i] - ycord[j]) * (ycord[i] - ycord[j]));
+					time[i][j] = distance[i][j] * 72;//把货车的平均时速设为50km/h的话
+
+				}
+			}
+		}
+
+		/*IloNum Cmin; Cmin =*/
+		//clock_t comp_start, comp_end;
+		//comp_start = clock();//计时 
+
+		OR1(demand, u, time, Q);
+		/*comp_end = clock();
+		IloNum comptime = (double)(comp_end - comp_start) / CLOCKS_PER_SEC;
+		cout << "\nthe comptutation time is: " << comptime << endl;*/
+		//outFile << "\nthe comptutation time is: " << comptime << endl; 
+		//outFile.close(); 
+	}
+
+
+	catch (IloException& e)
+	{
+		cerr << "concert exception caught" << e << endl;
+		/*getchar();*/
+	}
+	catch (...)
+	{
+		cerr << "unknown exception caught" << endl;
+		/*getchar();*/
+	}
+
+	system("pause");
+	return(1);
+
+}
